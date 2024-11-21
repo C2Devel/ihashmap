@@ -16,14 +16,21 @@ class Index:
     """Sub-mapping representation that is stored separately for quick search."""
 
     INDEX_CACHE_PREFIX: str = "_index_"
+
+    # Reverse index is used to quickly find and delete index key by the entity primary key.
     REVERSE_CACHE_INDEX_PREFIX: str = "_reverse_index_"
 
     KEY_SEPARATOR = "\u00A0"
     PK_KEY_PLACEHOLDER = f"{KEY_SEPARATOR}pk{KEY_SEPARATOR}"
 
     cache_name: str = None
-    keys: List[str]
+    """Cache (collection) name for index."""
+
+    fields: List[str]
+    """Entity fields in collection stored in index."""
+
     unique: bool = False
+    """Unique index flag."""
 
     LOCK = threading.Lock()
 
@@ -49,7 +56,7 @@ class Index:
         else:
             cls.__INDEXES__.setdefault("__global__", []).append(cls)
 
-        cls.keys = list(sorted(set(cls.keys)))
+        cls.fields = list(sorted(set(cls.fields)))
 
         for hook, pipe_wrapper in cls.HOOKS:
             if hasattr(cls, hook):
@@ -57,11 +64,11 @@ class Index:
                 setattr(cls, hook, pipe_wrapper(cache_name=cls.cache_name)(hook_action))
 
     @classmethod
-    def get_keys(cls) -> List[str]:
+    def get_fields(cls) -> List[str]:
         """Returns index keys with rendered primary key."""
 
         result = []
-        for key in cls.keys:
+        for key in cls.fields:
             result.append(
                 key if key != cls.PK_KEY_PLACEHOLDER else cls.cache().PRIMARY_KEY
             )
@@ -78,13 +85,13 @@ class Index:
     def get_name(cls, cache_name: str, reverse: bool = False):
         """Composes index name."""
 
-        keys = "_".join(cls.get_keys())
+        name = "_".join(cls.get_fields())
         prefix = cls.REVERSE_CACHE_INDEX_PREFIX if reverse else cls.INDEX_CACHE_PREFIX
 
-        return f"{prefix}:{cache_name}:{keys}"
+        return f"{prefix}:{cache_name}:{name}"
 
     @classmethod
-    def get_key(cls, value: Mapping[str, Any]) -> str:
+    def get_index_key(cls, value: Mapping[str, Any]) -> str:
         """Returns index key for value.
 
         :param dict value: cached value.
@@ -104,8 +111,8 @@ class Index:
 
         result = {}
 
-        for key in cls.get_keys():
-            result[key] = value.get(key)
+        for field in cls.get_fields():
+            result[field] = value.get(field)
 
         return (
             {k: v for k, v in result.items() if v is not None}
@@ -117,11 +124,11 @@ class Index:
     def before_create(cls, ctx: PipelineContext):
         """Stores original value for after_create usage."""
 
-        key, value = ctx.args
+        value, *_ = ctx.args
         ctx.local_data["value"] = value
 
         if cls.unique:
-            index_key = cls.get_key(value)
+            index_key = cls.get_index_key(value)
 
             if cls.get(ctx.name, index_key):
                 raise ValueError(f"Unique index violation {msgpack.loads(index_key, raw=False)}")
@@ -159,8 +166,8 @@ class Index:
     def before_update(cls, ctx: PipelineContext):
         """Creates value copy for after_update usage."""
 
-        key, _ = ctx.args
-        ctx.local_data["value"] = cls.cache().protocol.get(ctx.name, key)
+        value, *_ = ctx.args
+        ctx.local_data["value"] = cls.cache().protocol.get(ctx.name, value[cls.cache().PRIMARY_KEY])
 
     @classmethod
     def after_update(cls, ctx: PipelineContext):
@@ -170,7 +177,7 @@ class Index:
         """
 
         cls.remove(ctx.name, ctx.local_data["value"])
-        cls.append(ctx.name, ctx.args[1])
+        cls.append(ctx.name, ctx.args[0])
 
     @classmethod
     def find_index_for_cache(cls, cache_name: str) -> List["Index"]:
@@ -199,17 +206,19 @@ class Index:
         )
 
     @classmethod
-    def keys_(cls, cache_name: str):
+    def keys(cls, cache_name: str):
+        """Returns all keys for index."""
+
         return cls.cache().protocol.keys(cls.get_name(cache_name))
 
     @classmethod
     @Cache.PIPELINE.index_set
     @locked
-    def append(cls, cache_name, value: Mapping[str, Any]) -> None:
+    def append(cls, cache_name, entity: Mapping[str, Any]) -> None:
         """Appends value to index."""
 
-        index_key = cls.get_key(value)
-        value_pk = value[cls.cache().PRIMARY_KEY]
+        index_key = cls.get_index_key(entity)
+        value_pk = entity[cls.cache().PRIMARY_KEY]
 
         current_value = set(cls.get(cache_name, index_key, default=[]))
         current_value.add(value_pk)
@@ -247,22 +256,22 @@ class Index:
     ) -> Tuple[List[str], Set[str]]:
         """Combines indexes into one."""
 
-        combined_index_keys = set()
+        combined_index_fields = set()
         matches: List[Mapping[str, Any]] = []
 
-        pk_key = cls.cache().PRIMARY_KEY
+        pk_field = cls.cache().PRIMARY_KEY
 
         for index in indexes:
             subquery = index.cut_data(query, exclude_none=True)
 
-            combined_index_keys.update(index.get_keys())
+            combined_index_fields.update(index.get_fields())
 
             func_search = any(
                 isinstance(value, FunctionType) for value in subquery.values()
             )
 
             if func_search or index.cut_data(query) != subquery:
-                index_data = [msgpack.loads(d, raw=False) for d in index.keys_(cache_name)]
+                index_data = [msgpack.loads(d, raw=False) for d in index.keys(cache_name)]
 
                 for key, value in subquery.items():
                     filter_func = (
@@ -273,26 +282,26 @@ class Index:
                     index_data = filter(filter_func, index_data)
 
                 matches.extend(
-                    {pk_key: pk, **index.cut_data(i)}
+                    {pk_field: pk_value, **subquery}
                     for i in index_data
-                    for pk in index.get(cache_name, index.get_key(i), default=[])
+                    for pk_value in index.get(cache_name, index.get_index_key(i), default=[])
                 )
 
             else:
-                search_key = index.get_key(subquery)
+                search_key = index.get_index_key(subquery)
                 matches.extend(
-                    {pk_key: pk, **index.cut_data(subquery)}
-                    for pk in index.get(cache_name, search_key, default=[])
+                    {pk_field: pk_value, **subquery}
+                    for pk_value in index.get(cache_name, search_key, default=[])
                 )
 
         combined_index = {}
         for match in matches:
-            combined_index.setdefault(match[pk_key], {}).update(match)
+            combined_index.setdefault(match[pk_field], {}).update(match)
 
         result = []
 
         indexed_query = {
-            key: value for key, value in query.items() if key in combined_index_keys
+            key: value for key, value in query.items() if key in combined_index_fields
         }
 
         for doc in combined_index.values():
@@ -300,11 +309,11 @@ class Index:
                 result.append(doc)
 
         return (
-            sorted(result, key=lambda v: v[pk_key]),
-            combined_index_keys,
+            sorted(result, key=lambda v: v[pk_field]),
+            combined_index_fields,
         )
 
 
 class PkIndex(Index):
-    keys = [Index.PK_KEY_PLACEHOLDER]
+    fields = [Index.PK_KEY_PLACEHOLDER]
     unique = True

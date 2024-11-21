@@ -188,7 +188,7 @@ class Cache:
     LOCK = threading.RLock()
     """Lock for thread-safe operations."""
 
-    def __new__(cls, protocol: CacheProtocol) -> Self:
+    def __new__(cls, *args, **kwargs) -> Self:
         """Singleton instance creation."""
 
         if cls.__INSTANCE__ is None:
@@ -210,25 +210,19 @@ class Cache:
 
     @PIPELINE.set
     @locked
-    def set(self, name: str, key: str, value: Mapping[str, Any]) -> None:
+    def set(self, name: str, entity: Mapping[str, Any]) -> None:
         """Wrapper for pipeline execution.
 
-        :param str name: cache name.
-        :param str key: hash key.
-        :param dict value: stored value.
+        :param name: cache name.
+        :param entity: stored value.
         """
 
-        if value.get(self.PRIMARY_KEY) is None:
+        if entity.get(self.PRIMARY_KEY) is None:
             raise ValueError(
-                f"Primary key {self.PRIMARY_KEY} not found in value: {value}"
+                f"Primary key {self.PRIMARY_KEY} not found in value: {entity}"
             )
 
-        if value.get(self.PRIMARY_KEY) is not None and value[self.PRIMARY_KEY] != key:
-            raise ValueError(
-                f"Primary key mismatch: {value[self.PRIMARY_KEY]} != {key}"
-            )
-
-        return self.protocol.set(name, key, value)
+        return self.protocol.set(name, entity[self.PRIMARY_KEY], entity)
 
     @PIPELINE.get
     def get(self, name: str, key: str, default: Optional[Any] = None):
@@ -246,26 +240,22 @@ class Cache:
     def update(
         self,
         name: str,
-        key: str,
-        value: Mapping[str, Any],
+        entity: Mapping[str, Any],
         fields: Optional[List[str]] = None,
     ) -> None:
         """Wrapper for pipeline execution.
 
-        :param str name: cache name.
-        :param str key: hash key.
-        :param dict value: stored value.
+        :param name: Cache name.
+        :param entity: Update entity.
+        :param fields: Fields to update. If None, all fields will be updated.
         """
 
-        if (
-            value.get(self.PRIMARY_KEY) is not None
-            and value.get(self.PRIMARY_KEY) != key
-        ):
+        if entity.get(self.PRIMARY_KEY) is None:
             raise ValueError(
-                f"Primary key mismatch: {value[self.PRIMARY_KEY]} != {key}"
+                f"Primary key {self.PRIMARY_KEY} not found in value: {entity}"
             )
 
-        return self.protocol.update(name, key, value, fields=fields)
+        return self.protocol.update(name, entity[self.PRIMARY_KEY], entity, fields=fields)
 
     @PIPELINE.delete
     @locked
@@ -306,22 +296,32 @@ class Cache:
 
         from ihashmap.index import Index
 
-        index_match = []
+        index_field_match = []
         indexes = Index.find_index_for_cache(name)
 
         for index in indexes:
-            matched_keys = set(index.get_keys()).intersection(search_query)
-            matched_percentage = len(matched_keys) / (len(search_query) or 1)
+            matched_keys = set(index.get_fields()).intersection(search_query)
+            index_field_match.append(matched_keys)
 
-            index_match.append(
-                matched_percentage
-                if matched_keys - {self.PRIMARY_KEY} or index.get_keys() == [self.PRIMARY_KEY]
-                else 0
-            )
+        matching_indexes = sorted(
+            filter(
+                lambda x: len(x[1]) > 0,
+                zip(indexes, index_field_match)
+            ),
+            key=lambda x: len(x[1]),
+            reverse=True,
+        )
 
-        hit_indexes = [index for index, match in zip(indexes, index_match) if match == 1]
-        if not hit_indexes:
-            hit_indexes = [index for index, match in zip(indexes, index_match) if match > 0]
+        query_keys = set(search_query.keys())
+
+        hit_indexes = []
+        for index, matched_keys in matching_indexes:
+            if not query_keys:
+                break
+
+            if query_keys.intersection(matched_keys):
+                query_keys -= set(matched_keys)
+                hit_indexes.append(index)
 
         matched, combined_keys = Index.combine(
             name,
@@ -347,12 +347,12 @@ class Cache:
 
         if not rest_query:
             return [
-                self.protocol.get(name, value[self.PRIMARY_KEY]) for value in matched
+                self.get(name, value[self.PRIMARY_KEY]) for value in matched
             ]
 
         result = []
         for value in matched:
-            entity = self.protocol.get(name, value[self.PRIMARY_KEY])
+            entity = self.get(name, value[self.PRIMARY_KEY])
             result += match_query(entity, rest_query)
 
         return result
@@ -362,4 +362,4 @@ class Cache:
         """Internal method to get all values from cache."""
 
         for key in self.protocol.keys(name):
-            yield self.protocol.get(name, key)
+            yield self.get(name, key)

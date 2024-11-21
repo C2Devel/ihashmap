@@ -5,25 +5,25 @@ from ihashmap.index import Index
 from tests.conftest import DictCache
 
 
-def test_Index_get_keys():
+def test_Index_get_fields():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["_id", "model"]
+        fields = ["_id", "model"]
         cache_name = "test"
 
     index = MyIndex()
-    keys = index.get_keys()
+    keys = index.get_fields()
 
     assert isinstance(keys, list), "Expected keys to be a list"
     assert keys == ["_id", "model"], "Expected keys to be ['_id', 'model']"
 
     class MyIndex2(Index):
-        keys = [Index.PK_KEY_PLACEHOLDER, "model"]
+        fields = [Index.PK_KEY_PLACEHOLDER, "model"]
         cache_name = "test"
 
     index = MyIndex2()
-    keys = index.get_keys()
+    keys = index.get_fields()
 
     assert isinstance(keys, list), "Expected keys to be a list"
     assert set(keys) == {"_id", "model"}, "Expected keys to be ['_id', 'model']"
@@ -33,7 +33,7 @@ def test_Index_cache():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["_id", "model"]
+        fields = ["_id", "model"]
         cache_name = "test"
 
     index = MyIndex()
@@ -45,7 +45,7 @@ def test_Index_get_name():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["_id", "model"]
+        fields = ["_id", "model"]
         cache_name = "test"
 
     index = MyIndex()
@@ -57,13 +57,13 @@ def test_Index_get_key():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["_id", "model"]
+        fields = ["_id", "model"]
         cache_name = "test"
 
     index = MyIndex()
 
     entity = {"_id": "1234", "model": 1}
-    key = index.get_key(entity)
+    key = index.get_index_key(entity)
 
     assert msgpack.loads(key) == {
         "_id": "1234", "model": 1
@@ -74,25 +74,25 @@ def test_Index_append():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["model"]
+        fields = ["model"]
         cache_name = "test"
 
     index = MyIndex()
     entity = {"_id": "1234", "model": 1}
     entity2 = {"_id": "1235", "model": 1}
 
-    cache.set("test", "1234", entity)
+    cache.set("test", entity)
 
     index.append("test", entity2)
 
-    assert set(cache.get(index.get_name("test"), index.get_key(entity))) == {"1234", "1235"}
+    assert set(cache.get(index.get_name("test"), index.get_index_key(entity))) == {"1234", "1235"}
 
 
 def test_Index_cut_data():
     Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["_id", "model"]
+        fields = ["_id", "model"]
         cache_name = "test"
 
     index = MyIndex()
@@ -107,27 +107,27 @@ def test_Index_remove():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["model"]
+        fields = ["model"]
         cache_name = "test"
 
     index = MyIndex()
     entity = {"_id": "1234", "model": 1}
 
-    cache.set("test", "1234", entity)
+    cache.set("test", entity)
     index.remove("test", entity)
 
-    assert cache.get(index.get_name("test"), index.get_key(entity), []) == []
+    assert cache.get(index.get_name("test"), index.get_index_key(entity), []) == []
 
 
 def test_Index_combine():
     cache = Cache(DictCache())
 
     class MyIndex(Index):
-        keys = ["model"]
+        fields = ["model"]
         cache_name = "test"
 
     class MyIndex2(Index):
-        keys = ["release"]
+        fields = ["release"]
         cache_name = "test"
 
     index = MyIndex()
@@ -136,8 +136,8 @@ def test_Index_combine():
     entity1 = {"_id": "1234", "model": 1, "release": "1.0"}
     entity2 = {"_id": "1235", "model": 1, "release": "1.0"}
 
-    cache.set("test", "1234", entity1)
-    cache.set("test", "1235", entity2)
+    cache.set("test", entity1)
+    cache.set("test", entity2)
 
     indexes = [index, index2]
     query = {"_id": "1234", "model": 1, "release": "1.0"}
