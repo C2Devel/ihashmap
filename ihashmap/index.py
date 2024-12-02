@@ -168,6 +168,8 @@ class Index:
 
         value, *_ = ctx.args
         ctx.local_data["value"] = cls.cache().protocol.get(ctx.name, value[cls.cache().PRIMARY_KEY])
+        if ctx.local_data["value"] is None:
+            raise KeyError(f"Entity {value[cls.cache().PRIMARY_KEY]} not found in cache {ctx.name}")
 
     @classmethod
     def after_update(cls, ctx: PipelineContext):
