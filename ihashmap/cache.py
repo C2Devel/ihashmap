@@ -255,7 +255,9 @@ class Cache:
                 f"Primary key {self.PRIMARY_KEY} not found in value: {entity}"
             )
 
-        return self.protocol.update(name, entity[self.PRIMARY_KEY], entity, fields=fields)
+        return self.protocol.update(
+            name, entity[self.PRIMARY_KEY], entity, fields=fields
+        )
 
     @PIPELINE.delete
     @locked
@@ -304,10 +306,7 @@ class Cache:
             index_field_match.append(matched_keys)
 
         matching_indexes = sorted(
-            filter(
-                lambda x: len(x[1]) > 0,
-                zip(indexes, index_field_match)
-            ),
+            filter(lambda x: len(x[1]) > 0, zip(indexes, index_field_match)),
             key=lambda x: len(x[1]),
             reverse=True,
         )
@@ -323,7 +322,7 @@ class Cache:
                 query_keys -= set(matched_keys)
                 hit_indexes.append(index)
 
-        matched, combined_keys = Index.combine(
+        matched_pks, combined_keys = Index.combine(
             name,
             hit_indexes,
             search_query,
@@ -342,17 +341,15 @@ class Cache:
                 search_query,
             )
 
-            matched = [{self.PRIMARY_KEY: key} for key in self.protocol.keys(name)]
+            matched_pks = self.protocol.keys(name)
             rest_query = search_query
 
         if not rest_query:
-            return [
-                self.get(name, value[self.PRIMARY_KEY]) for value in matched
-            ]
+            return [self.get(name, pk) for pk in matched_pks]
 
         result = []
-        for value in matched:
-            entity = self.get(name, value[self.PRIMARY_KEY])
+        for pk in matched_pks:
+            entity = self.get(name, pk)
 
             if match_query(entity, rest_query):
                 result.append(entity)

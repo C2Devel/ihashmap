@@ -7,7 +7,7 @@ from typing import (Any, Dict, List, Mapping, Optional, Set, Tuple, TypeVar,
 import msgpack
 
 from ihashmap.cache import Cache, PipelineContext
-from ihashmap.helpers import locked, match_query
+from ihashmap.helpers import locked
 
 T = TypeVar("T")
 
@@ -20,7 +20,7 @@ class Index:
     # Reverse index is used to quickly find and delete index key by the entity primary key.
     REVERSE_CACHE_INDEX_PREFIX: str = "_reverse_index_"
 
-    KEY_SEPARATOR = "\u00A0"
+    KEY_SEPARATOR = "\u00a0"
     PK_KEY_PLACEHOLDER = f"{KEY_SEPARATOR}pk{KEY_SEPARATOR}"
 
     cache_name: str = None
@@ -131,7 +131,9 @@ class Index:
             index_key = cls.get_index_key(value)
 
             if cls.get(ctx.name, index_key):
-                raise ValueError(f"Unique index violation {msgpack.loads(index_key, raw=False)}")
+                raise ValueError(
+                    f"Unique index violation {msgpack.loads(index_key, raw=False)}"
+                )
 
     @classmethod
     def after_create(cls, ctx: PipelineContext):
@@ -167,9 +169,13 @@ class Index:
         """Creates value copy for after_update usage."""
 
         value, *_ = ctx.args
-        ctx.local_data["value"] = cls.cache().protocol.get(ctx.name, value[cls.cache().PRIMARY_KEY])
+        ctx.local_data["value"] = cls.cache().protocol.get(
+            ctx.name, value[cls.cache().PRIMARY_KEY]
+        )
         if ctx.local_data["value"] is None:
-            raise KeyError(f"Entity {value[cls.cache().PRIMARY_KEY]} not found in cache {ctx.name}")
+            raise KeyError(
+                f"Entity {value[cls.cache().PRIMARY_KEY]} not found in cache {ctx.name}"
+            )
 
     @classmethod
     def after_update(cls, ctx: PipelineContext):
@@ -225,7 +231,9 @@ class Index:
         current_value = set(cls.get(cache_name, index_key, default=[]))
         current_value.add(value_pk)
 
-        cls.cache().protocol.set(cls.get_name(cache_name), index_key, list(current_value))
+        cls.cache().protocol.set(
+            cls.get_name(cache_name), index_key, list(current_value)
+        )
         cls.cache().protocol.set(
             cls.get_name(cache_name, reverse=True),
             value_pk,
@@ -259,9 +267,7 @@ class Index:
         """Combines indexes into one."""
 
         combined_index_fields = set()
-        matches: List[Mapping[str, Any]] = []
-
-        pk_field = cls.cache().PRIMARY_KEY
+        matches: Union[Set[str], None] = None
 
         for index in indexes:
             subquery = index.cut_data(query, exclude_none=True)
@@ -273,7 +279,9 @@ class Index:
             )
 
             if func_search or index.cut_data(query) != subquery:
-                index_data = [msgpack.loads(d, raw=False) for d in index.keys(cache_name)]
+                index_data = [
+                    msgpack.loads(d, raw=False) for d in index.keys(cache_name)
+                ]
 
                 for key, value in subquery.items():
                     filter_func = (
@@ -283,35 +291,25 @@ class Index:
                     )
                     index_data = filter(filter_func, index_data)
 
-                matches.extend(
-                    {pk_field: pk_value, **subquery}
+                matched_pks = [
+                    pk_value
                     for i in index_data
-                    for pk_value in index.get(cache_name, index.get_index_key(i), default=[])
-                )
+                    for pk_value in index.get(
+                        cache_name, index.get_index_key(i), default=[]
+                    )
+                ]
 
             else:
                 search_key = index.get_index_key(subquery)
-                matches.extend(
-                    {pk_field: pk_value, **subquery}
-                    for pk_value in index.get(cache_name, search_key, default=[])
-                )
+                matched_pks = index.get(cache_name, search_key, default=[])
 
-        combined_index = {}
-        for match in matches:
-            combined_index.setdefault(match[pk_field], {}).update(match)
-
-        result = []
-
-        indexed_query = {
-            key: value for key, value in query.items() if key in combined_index_fields
-        }
-
-        for doc in combined_index.values():
-            if match_query(doc, indexed_query):
-                result.append(doc)
+            if matches is None:
+                matches = set(matched_pks)
+            else:
+                matches &= set(matched_pks)
 
         return (
-            sorted(result, key=lambda v: v[pk_field]),
+            list(sorted(matches)) if matches is not None else list(),
             combined_index_fields,
         )
 

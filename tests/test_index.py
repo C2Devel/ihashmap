@@ -6,7 +6,7 @@ from tests.conftest import DictCache
 
 
 def test_Index_get_fields():
-    cache = Cache(DictCache())
+    Cache(DictCache())
 
     class MyIndex(Index):
         fields = ["_id", "model"]
@@ -42,7 +42,7 @@ def test_Index_cache():
 
 
 def test_Index_get_name():
-    cache = Cache(DictCache())
+    Cache(DictCache())
 
     class MyIndex(Index):
         fields = ["_id", "model"]
@@ -50,11 +50,13 @@ def test_Index_get_name():
 
     index = MyIndex()
 
-    assert index.get_name("test") == "_index_:test:_id_model", "Expected index name to be '_index_:test:_id_model'"
+    assert (
+        index.get_name("test") == "_index_:test:_id_model"
+    ), "Expected index name to be '_index_:test:_id_model'"
 
 
 def test_Index_get_key():
-    cache = Cache(DictCache())
+    Cache(DictCache())
 
     class MyIndex(Index):
         fields = ["_id", "model"]
@@ -66,7 +68,8 @@ def test_Index_get_key():
     key = index.get_index_key(entity)
 
     assert msgpack.loads(key) == {
-        "_id": "1234", "model": 1
+        "_id": "1234",
+        "model": 1,
     }, "Expected key to be {'_id': '1234', 'model': 1}"
 
 
@@ -85,7 +88,10 @@ def test_Index_append():
 
     index.append("test", entity2)
 
-    assert set(cache.get(index.get_name("test"), index.get_index_key(entity))) == {"1234", "1235"}
+    assert set(cache.get(index.get_name("test"), index.get_index_key(entity))) == {
+        "1234",
+        "1235",
+    }
 
 
 def test_Index_cut_data():
@@ -100,7 +106,10 @@ def test_Index_cut_data():
     query = {"_id": "1234", "model": 1, "release": "1.0"}
     data = index.cut_data(query)
 
-    assert data == {"_id": "1234", "model": 1}, "Expected data to be {'_id': '1234', 'model': 1}"
+    assert data == {
+        "_id": "1234",
+        "model": 1,
+    }, "Expected data to be {'_id': '1234', 'model': 1}"
 
 
 def test_Index_remove():
@@ -144,5 +153,5 @@ def test_Index_combine():
 
     data, keys = Index.combine("test", indexes, query)
 
-    assert data == [entity1, entity2]
+    assert data == [entity1["_id"], entity2["_id"]]
     assert keys == {"model", "release"}, "Expected keys to be {'release', 'model'}"

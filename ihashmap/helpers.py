@@ -1,6 +1,6 @@
 import functools
 from types import FunctionType
-from typing import Any, List, Mapping
+from typing import Any, Mapping
 
 
 def match_query(

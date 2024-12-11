@@ -5,7 +5,7 @@ from tests.conftest import DictCache
 
 def test_Cache_find_all():
     class IndexByModel(Index):
-        fields = ["_id", "model"]
+        fields = ["model"]
         cache_name = "test"
 
     cache = Cache(DictCache())
@@ -40,7 +40,7 @@ def test_Cache_search():
 
 def test_Cache_search_with_index():
     class IndexByModel(Index):
-        fields = ["_id", "model"]
+        fields = ["model"]
         cache_name = "test"
 
     cache = Cache(DictCache())
@@ -58,6 +58,8 @@ def test_Cache_search_with_index():
     assert cache.search("test", {"release": "1.0"}) == [entity1, entity2]
     assert cache.search("test", {"release": "2.0"}) == [entity3]
 
+    cache.search("test", {"model": lambda v: v in range(5)})
+
 
 def test_Cache_all():
     cache = Cache(DictCache())
@@ -74,7 +76,6 @@ def test_Cache_all():
 
 
 def test_Cache_delete():
-
     cache = Cache(DictCache())
 
     entity1 = {"_id": "1234", "model": 1, "release": "1.0"}

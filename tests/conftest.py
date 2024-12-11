@@ -16,7 +16,7 @@ class DictCache(CacheProtocol):
     def set(self, name, key, value):
         self.data.setdefault(name, {})[key] = value
 
-    def update(self, name, key, data, fields = None):
+    def update(self, name, key, data, fields=None):
         self.data.setdefault(name, {}).setdefault(key, {}).update(data)
 
     def delete(self, name, key):
