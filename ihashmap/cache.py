@@ -353,7 +353,9 @@ class Cache:
         result = []
         for value in matched:
             entity = self.get(name, value[self.PRIMARY_KEY])
-            result += match_query(entity, rest_query)
+
+            if match_query(entity, rest_query):
+                result.append(entity)
 
         return result
 

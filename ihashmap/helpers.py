@@ -6,14 +6,13 @@ from typing import Any, List, Mapping
 def match_query(
     value: Mapping[str, Any],
     query: Mapping[str, Any],
-) -> List[Mapping[str, Any]]:
+) -> bool:
     """Matches query to mapping values.
 
     :param value: mapping value.
     :param query: pattern to match against value
     """
 
-    matched = []
     match = {key: False for key in query}
 
     for search_key, search_value in query.items():
@@ -25,9 +24,9 @@ def match_query(
                 match[search_key] = True
 
     if all(match.values()):
-        matched.append(value)
+        return True
 
-    return matched
+    return False
 
 
 def locked(f):
