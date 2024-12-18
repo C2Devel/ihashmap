@@ -1,12 +1,50 @@
-import collections
-import copy
 import functools
-import types
-import typing
+import logging
+import threading
+from typing import Any, Callable, Generator, List, Mapping, Optional, Union
+
+from typing_extensions import Protocol, Self, final
 
 from ihashmap.action import Action
+from ihashmap.helpers import locked, match_query
+
+LOG = logging.getLogger(__name__)
 
 
+class CacheProtocol(Protocol):
+    """Protocol for cache storage.
+
+    You need to implement locking mechanism in your storage if it is not thread-safe.
+    """
+
+    def get(
+        self, name: str, key: str, default: Optional[Any] = None
+    ) -> Union[Mapping, List[str], str]:
+        ...
+
+    def set(self, name: str, key: str, value: Union[Mapping, List[str], str]) -> None:
+        ...
+
+    def update(
+        self,
+        name: str,
+        key: str,
+        value: Union[Mapping, List[str]],
+        fields: Optional[List[str]] = None,
+    ) -> None:
+        ...
+
+    def delete(self, name: str, key: str) -> None:
+        ...
+
+    def keys(self, name: str) -> List[str]:
+        ...
+
+    def pop(self, name: str, key: str, default: Optional[Any] = None) -> Optional[str]:
+        ...
+
+
+@final
 class PipelineContext:
     def __init__(self, f, cls_or_self, name, *args, **kwargs):
         self.f = f
@@ -18,6 +56,7 @@ class PipelineContext:
         self.local_data = {}
 
 
+@final
 class Pipeline:
     """Class representation of flow process (Middleware pattern).
 
@@ -33,7 +72,6 @@ class Pipeline:
         self._pipe_before = []
         self._pipe_after = []
 
-    @property
     def pipe_before(self):
         pipe = []
         if self.parent_pipe is not None:
@@ -42,13 +80,15 @@ class Pipeline:
         pipe.sort(key=lambda action: action.priority)
         return pipe
 
-    @property
     def pipe_after(self):
         pipe = []
+
         if self.parent_pipe is not None:
             pipe += self.parent_pipe.pipe_after
+
         pipe += self._pipe_after
         pipe.sort(key=lambda action: action.priority)
+
         return pipe
 
     def before(self, priority=1, cache_name=None):
@@ -68,14 +108,14 @@ class Pipeline:
     def wrap_before(self, ctx: PipelineContext):
         """Executes all actions in parents _pipe_before and this pipes."""
 
-        for action in self.pipe_before:
+        for action in self.pipe_before():
             if action.cache_name in [None, ctx.name]:
                 action(ctx)
 
     def wrap_after(self, ctx: PipelineContext):
         """Executes all actions in parents _pipe_after and this pipes."""
 
-        for action in self.pipe_after:
+        for action in self.pipe_after():
             if action.cache_name in [None, ctx.name]:
                 action(ctx)
 
@@ -85,7 +125,7 @@ class Pipeline:
         self.wrap_after(ctx)
         return ctx.result
 
-    def __call__(self, f: typing.Callable) -> typing.Callable:
+    def __call__(self, f: Callable) -> Callable:
         """Wrapper around main function.
         Executes actions before and after main function execution.
 
@@ -108,6 +148,7 @@ class Pipeline:
         return wrap
 
 
+@final
 class PipelineManager:
     """Manager."""
 
@@ -126,15 +167,14 @@ class PipelineManager:
             self.pipes[pipe_name] = Pipeline(pipe.name, parent_pipe=pipe)
 
 
+@final
 class Cache:
     """Wrapper around user-defined caching storage.
 
     Adds custom logic to plain hash based storage such as indexes
     and quick search based on them.
 
-    For usage first define GET_METHOD, SET_METHOD, UPDATE_METHOD, DELETE_METHOD
-    with matching signatures using `register_*` methods.
-    Secondly create required indexes (pk index is required by default).
+    Singleton class.
     """
 
     PIPELINE = PipelineManager()
@@ -142,218 +182,183 @@ class Cache:
     PRIMARY_KEY = "_id"
     """Values primary key existing in all values."""
 
-    GET_METHOD = lambda cache, name, key, default=None: None  # noqa: E731
-    SET_METHOD = lambda cache, name, key, value: None  # noqa: E731
-    UPDATE_METHOD = lambda cache, name, key, value: None  # noqa: E731
-    DELETE_METHOD = lambda cache, name, key: None  # noqa: E731
-    """METHODS placeholders. You should register yours."""
+    __INSTANCE__ = None
+    """Singleton instance."""
+
+    LOCK = threading.RLock()
+    """Lock for thread-safe operations."""
+
+    def __new__(cls, *args, **kwargs) -> Self:
+        """Singleton instance creation."""
+
+        if cls.__INSTANCE__ is None:
+            cls.__INSTANCE__ = super().__new__(cls)
+
+        return cls.__INSTANCE__
+
+    def __init__(self, protocol: CacheProtocol) -> None:
+        self.protocol = protocol
+
+    def __init_subclass__(cls):
+        cls.PIPELINE = PipelineManager(parent_manager=cls.PIPELINE)
+
+        return super().__init_subclass__()
+
+    @classmethod
+    def instance(cls):
+        return cls.__INSTANCE__
 
     @PIPELINE.set
-    def set(self, name: str, key: str, value: typing.Mapping):
+    @locked
+    def set(self, name: str, entity: Mapping[str, Any]) -> None:
         """Wrapper for pipeline execution.
 
-        :param str name: cache name.
-        :param str key: hash key.
-        :param dict value: stored value.
-        :return:
+        :param name: cache name.
+        :param entity: stored value.
         """
 
-        return self.SET_METHOD(name, key, value)
+        if entity.get(self.PRIMARY_KEY) is None:
+            raise ValueError(
+                f"Primary key {self.PRIMARY_KEY} not found in value: {entity}"
+            )
+
+        return self.protocol.set(name, entity[self.PRIMARY_KEY], entity)
 
     @PIPELINE.get
-    def get(self, name: str, key: str, default: typing.Optional[typing.Any] = None):
+    def get(self, name: str, key: str, default: Optional[Any] = None):
         """Wrapper for pipeline execution.
 
         :param str name: cache name.
         :param str key: hash key.
-        :param default: default return value. Must be custom class instance
-                        or collections.UserDict/collections.UserList
-        :return:
+        :param default: default return value.
         """
 
-        return self.GET_METHOD(name, key, default)
+        return self.protocol.get(name, key, default)
 
     @PIPELINE.update
-    def update(self, name: str, key: str, value: typing.Mapping):
+    @locked
+    def update(
+        self,
+        name: str,
+        entity: Mapping[str, Any],
+        fields: Optional[List[str]] = None,
+    ) -> None:
         """Wrapper for pipeline execution.
 
-        :param str name: cache name.
-        :param str key: hash key.
-        :param dict value: stored value.
+        :param name: Cache name.
+        :param entity: Update entity.
+        :param fields: Fields to update. If None, all fields will be updated.
         """
 
-        return self.UPDATE_METHOD(name, key, value)
+        if entity.get(self.PRIMARY_KEY) is None:
+            raise ValueError(
+                f"Primary key {self.PRIMARY_KEY} not found in value: {entity}"
+            )
+
+        return self.protocol.update(
+            name, entity[self.PRIMARY_KEY], entity, fields=fields
+        )
 
     @PIPELINE.delete
-    def delete(self, name: str, key: str):
+    @locked
+    def delete(self, name: str, key: str) -> None:
         """Wrapper for pipeline execution.
 
         :param str name: cache name.
         :param str key: hash key.
         """
 
-        return self.DELETE_METHOD(name, key)
+        return self.protocol.delete(name, key)
 
-    def all(self, name: str):
+    @locked
+    def all(self, name: str) -> Generator[Mapping[str, Any], None, None]:
         """Finds all values in cache.
 
-        :param name:
-        :return:
+        :param name: cache name.
         """
 
-        from ihashmap.index import PkIndex
+        for key in self.protocol.keys(name):
+            value = self.get(name, key, default=None)
+            if value is not None:
+                yield value
 
-        index_data = PkIndex.get(name)
-        result = []
-        for item_key in index_data:
-            result.append(self._get(name, item_key))
-        return result
-
-    @classmethod
-    def register_get_method(cls, method: typing.Callable):
-        """Registers get method for global cache usage.
-
-        :param method: function which will be called on .get method execution
-        """
-
-        cls.GET_METHOD = method
-
-    @classmethod
-    def register_set_method(cls, method: typing.Callable):
-        """Registers set method for global cache usage.
-
-        :param method: function which will be called on .set method execution.
-        """
-
-        cls.SET_METHOD = method
-
-    @classmethod
-    def register_update_method(cls, method: typing.Callable):
-        """Registers update method for global cache usage.
-
-        :param method: function which will be called on .update method execution.
-        """
-
-        cls.UPDATE_METHOD = method
-
-    @classmethod
-    def register_delete_method(cls, method: typing.Callable):
-        """Registers update method for global cache usage.
-
-        :param method: function which will be called on .delete method execution.
-        :return:
-        """
-        cls.DELETE_METHOD = method
-
-    @classmethod
-    def _match_query(cls, value: dict, query: dict, is_index=False):
-        """Matches query to mapping values.
-
-        :param value: value to match against pattern
-        :param query: dict se
-        :return:
-        """
-
-        matched = []
-        match = {key: False for key in query}
-        for search_key, search_value in query.items():
-            if isinstance(search_value, types.FunctionType):
-                if search_value(value.get(search_key)):
-                    match[search_key] = True
-            else:
-                if is_index:
-                    search_value = str(search_value)
-                if value.get(search_key) == search_value:
-                    match[search_key] = True
-        if all(match.values()):
-            matched.append(value)
-        return matched
-
+    @locked
     def search(
         self,
         name: str,
-        search_query: typing.Mapping[
-            str, typing.Union[str, int, tuple, list, typing.Callable]
-        ],
-    ) -> typing.List[typing.Mapping]:
+        search_query: Mapping[str, Union[str, int, tuple, list, Callable]],
+    ) -> List[Mapping]:
         """Searches cache for required values based on search query.
 
         :param name: cache name.
         :param dict search_query: search key:value to match.
-                                  Values can be any builtin type
-                                  or function to which value will be passed as argument.
+            Values can be any builtin type or function to which value will be passed as argument.
         :return: list of matching values.
         """
 
         from ihashmap.index import Index
 
-        index_match = []
+        index_field_match = []
         indexes = Index.find_index_for_cache(name)
+
         for index in indexes:
-            index_match.append(
-                len(set(index.keys).intersection(search_query)) / len(search_query)
-            )
-        best_choice_index = index_match.index(max(index_match))
-        best_index = indexes[best_choice_index]
-        index_data = set(best_index.get(name))
-        index_data = best_index.get_values(index_data)
-        matched = []
-        subquery = {
-            key: value for key, value in search_query.items() if key in best_index.keys
-        }
+            matched_keys = set(index.get_fields()).intersection(search_query)
+            index_field_match.append(matched_keys)
+
+        matching_indexes = sorted(
+            filter(lambda x: len(x[1]) > 0, zip(indexes, index_field_match)),
+            key=lambda x: len(x[1]),
+            reverse=True,
+        )
+
+        query_keys = set(search_query.keys())
+
+        hit_indexes = []
+        for index, matched_keys in matching_indexes:
+            if not query_keys:
+                break
+
+            if query_keys.intersection(matched_keys):
+                query_keys -= set(matched_keys)
+                hit_indexes.append(index)
+
+        matched_pks, combined_keys = Index.combine(
+            name,
+            hit_indexes,
+            search_query,
+        )
+
         rest_query = {
             key: value
             for key, value in search_query.items()
-            if key not in best_index.keys
+            if key not in combined_keys
         }
-        for value in index_data:
-            matched += self._match_query(value, subquery, is_index=True)
+
+        if not hit_indexes:
+            LOG.warning(
+                "Complete index miss for %s query: %s. Query will be slow.",
+                name,
+                search_query,
+            )
+
+            matched_pks = self.protocol.keys(name)
+            rest_query = search_query
+
+        if not rest_query:
+            return [self.get(name, pk) for pk in matched_pks]
+
         result = []
-        for value in matched:
-            entity = self._get(name, value[self.PRIMARY_KEY])
-            result += self._match_query(entity, rest_query)
+        for pk in matched_pks:
+            entity = self.get(name, pk)
+
+            if match_query(entity, rest_query):
+                result.append(entity)
+
         return result
 
-    @PIPELINE.get
-    def _get(self, name: str, key: str, default: typing.Optional[typing.Any] = None):
-        """Internal method. PLEASE DONT CHANGE!"""
+    @locked
+    def find_all(self, name: str) -> Generator[Union[Mapping, List[str]], None, None]:
+        """Internal method to get all values from cache."""
 
-        return self.GET_METHOD(name, key, default)
-
-    @PIPELINE.set
-    def _set(self, name, key, value):
-        """Internal method. PLEASE DONT CHANGE!"""
-
-        return self.SET_METHOD(name, key, value)
-
-    @PIPELINE.update
-    def _update(self, name, key, value):
-        """Internal method. PLEASE DONT CHANGE!"""
-
-        return self.UPDATE_METHOD(name, key, value)
-
-    @PIPELINE.delete
-    def _delete(self, name, key):
-        """Internal method. PLEASE DONT CHANGE!"""
-
-        return self.DELETE_METHOD(name, key)
-
-    def __init_subclass__(cls, **kwargs):
-        cls.PIPELINE = PipelineManager(parent_manager=cls.PIPELINE)
-
-
-@Cache.PIPELINE.get.after()
-@Cache.PIPELINE.set.after()
-@Cache.PIPELINE.update.after()
-def add_shadow_copy(ctx: PipelineContext):
-    """Add .__shadow_copy__ attribute for future use in pipelines."""
-
-    if ctx.result is not None:
-        ctx.result.__shadow_copy__ = ctx.result
-    elif "original_value" in ctx.local_data:
-        value = ctx.local_data["original_value"]
-        try:
-            delattr(value, "__shadow_copy__")
-        except AttributeError:
-            pass
-        value.__shadow_copy__ = copy.copy(value)
+        for key in self.protocol.keys(name):
+            yield self.get(name, key)

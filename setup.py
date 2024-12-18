@@ -4,10 +4,10 @@ import setuptools
 
 module_info = {
     "name": "ihashmap",
-    "version": "1.0.8",
+    "version": "1.1",
     "description": "Wrapper for hash map based storage systems",
     "author": "Yury Sokov aka. Yurzs",
-    "author_email": "yurzs+ihashmap@icloud.com",
+    "author_email": "me@yurzs.dev",
     "packages": setuptools.find_packages(
         exclude=("tests", "tests.*", "*.tests"),
     ),

@@ -8,3 +8,6 @@ class Action:
 
     def __call__(self, *args, **kwargs):
         return self.f(*args, **kwargs)
+
+    def __repr__(self):
+        return f"{self.cache_name}.{self.f.__name__}[{self.priority}]"
